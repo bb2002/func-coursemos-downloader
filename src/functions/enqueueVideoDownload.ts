@@ -28,7 +28,7 @@ export async function insertVideoProcessRequest({
   rowKey,
   ipAddress,
   status,
-  blobId
+  blobId,
 }: InsertVideoProcessRequestParams) {
   const client = await getOrCreateTable(VIDEO_PROCESS_REQUESTS_TABLE);
   return client.createEntity({
@@ -88,7 +88,7 @@ export async function getLatestProcessedVideo(mediaUrl: string) {
 async function fun({
   body,
   request,
-  context
+  context,
 }: HttpRequestParams<RequestEnqueueVideoDownload>) {
   const latestRequest = await getLatestVideoProcessRequest(body.installationId);
   if (latestRequest) {
@@ -102,14 +102,16 @@ async function fun({
   }
 
   const latestProcessedVideo = await getLatestProcessedVideo(body.mediaUrl);
-  const blobId = latestProcessedVideo ? latestProcessedVideo.rowKey : randomString(32);
+  const blobId = latestProcessedVideo
+    ? latestProcessedVideo.rowKey
+    : randomString(32);
   if (!latestProcessedVideo) {
     const queue = await getOrCreateQueue(QUEUE_NAME);
     await sendMessage(queue, {
       partitionKey: body.installationId,
       rowKey: context.invocationId,
       mediaUrl: body.mediaUrl,
-      blobId: blobId
+      blobId: blobId,
     } as VideoProcessQueueItem);
   }
 
@@ -122,7 +124,7 @@ async function fun({
   });
 
   return {
-    blobId
+    blobId,
   };
 }
 

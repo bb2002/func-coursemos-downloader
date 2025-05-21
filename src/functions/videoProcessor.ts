@@ -14,8 +14,10 @@ import {
   VIDEO_PROCESS_REQUESTS_TABLE,
 } from "../utils/constant";
 import hash from "../utils/hash";
+import { pipeline } from "stream";
 
 const execFileAsync = promisify(execFile);
+const streamPipeline = promisify(pipeline);
 const CONTAINER_NAME = "videos";
 
 interface UpdateVideoProcessResultParams {
@@ -59,10 +61,10 @@ export async function insertProcessedVideo({
   });
 }
 
-export async function videoProcessor(
-  { partitionKey, rowKey, mediaUrl, blobId }: VideoProcessQueueItem,
+async function executeTS(
+  { partitionKey, rowKey, mediaUrl }: VideoProcessQueueItem,
   context: InvocationContext
-): Promise<void> {
+) {
   const baseUrl = `${mediaUrl.substring(0, mediaUrl.lastIndexOf("/") + 1)}`;
   const filename = mediaUrl.substring(mediaUrl.lastIndexOf("/") + 1);
   const downloadedSegments: string[] = [];
@@ -86,7 +88,7 @@ export async function videoProcessor(
       rowKey,
       status: "FILRNAME_FORMAT_FAULT",
     });
-    return;
+    return null;
   } else {
     await updateVideoProcessResult({
       partitionKey,
@@ -95,8 +97,7 @@ export async function videoProcessor(
     });
   }
 
-  const tempDirName = randomString(6);
-  const tempDir = path.join("/tmp", tempDirName);
+  const tempDir = path.join("/tmp", randomString(6));
   await mkdir(tempDir, { recursive: true });
 
   let i = 1;
@@ -126,14 +127,14 @@ export async function videoProcessor(
         rowKey,
         status: "DOWNLOAD_FAILED_WITH_" + res.status,
       });
-      return;
+      return null;
     } catch (ex) {
       await updateVideoProcessResult({
         partitionKey,
         rowKey,
         status: "DOWNLOAD_FAILED_NETWORK_ERROR",
       });
-      return;
+      return null;
     }
   }
 
@@ -171,7 +172,66 @@ export async function videoProcessor(
       rowKey,
       status: "ENCODING_FAULT",
     });
-    return;
+    return null;
+  }
+
+  return outputPath;
+}
+
+async function executeMP4(
+  { partitionKey, rowKey, mediaUrl }: VideoProcessQueueItem,
+  context: InvocationContext
+) {
+  const tempDir = path.join("/tmp", randomString(6));
+  await mkdir(tempDir, { recursive: true });
+  const outputPath = path.join(tempDir, "output.mp4");
+  await updateVideoProcessResult({
+    partitionKey,
+    rowKey,
+    status: "DOWNLOADING",
+  });
+
+  try {
+    const response = await axios.get(mediaUrl, { responseType: "stream" });
+    await streamPipeline(response.data, fs.createWriteStream(outputPath));
+    return outputPath;
+  } catch (ex) {
+    context.error("Downloading failed", ex);
+    await updateVideoProcessResult({
+      partitionKey,
+      rowKey,
+      status: "DOWNLOAD_FAILED_NETWORK_ERROR",
+    });
+    return null;
+  }
+}
+
+export async function videoProcessor(
+  { partitionKey, rowKey, mediaUrl, blobId }: VideoProcessQueueItem,
+  context: InvocationContext
+): Promise<void> {
+  const mediaUrlObj = new URL(mediaUrl);
+
+  let outputPath: string | null = null;
+  switch (path.extname(mediaUrlObj.pathname).toLowerCase()) {
+    case ".ts":
+      outputPath = await executeTS(
+        { partitionKey, rowKey, mediaUrl, blobId },
+        context
+      );
+      break;
+    case ".mp4":
+      outputPath = await executeMP4(
+        { partitionKey, rowKey, mediaUrl, blobId },
+        context
+      );
+      break;
+    default:
+      await updateVideoProcessResult({
+        partitionKey,
+        rowKey,
+        status: "MEDIA_FORMAT_ERROR",
+      });
   }
 
   const fileBuffer = await fs.promises.readFile(outputPath);
