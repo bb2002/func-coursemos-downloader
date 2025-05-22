@@ -18,19 +18,6 @@ export type HttpRequestParams<T> = {
   body: T;
 };
 
-function isHttpResponseInit(obj: any): obj is HttpResponseInit {
-  return (
-    typeof obj === "object" &&
-    obj !== null &&
-    ("body" in obj ||
-      "jsonBody" in obj ||
-      "status" in obj ||
-      "headers" in obj ||
-      "cookies" in obj ||
-      "enableContentNegotiation" in obj)
-  );
-}
-
 export function httpRequest<T extends object>(
   inDto: ClassConstructor<T>,
   fun: (params: HttpRequestParams<T>) => Promise<object | HttpResponseInit>
