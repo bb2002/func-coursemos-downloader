@@ -20,7 +20,7 @@ node_modules/
 jspm_packages/
 typings/
 .npm
-.vscode/
+.vscode
 .eslintcache
 .node_repl_history
 *.tgz

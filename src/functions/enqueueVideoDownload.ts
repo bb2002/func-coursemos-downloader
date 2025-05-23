@@ -2,7 +2,7 @@ import { app } from "@azure/functions";
 import { RequestEnqueueVideoDownload } from "../dtos/EnqueueVideoDownload.dto";
 import { httpRequest, HttpRequestParams } from "../utils/httpRequest";
 import { getOrCreateQueue, sendMessage } from "../utils/queue";
-import { getOrCreateTable } from "../utils/table";
+import { getOrCreateTable, getVideoProcessRequests } from "../utils/table";
 import { differenceInSeconds, subHours, subSeconds } from "date-fns";
 import { TooManyRequestsError } from "../utils/httpException";
 import getIPAddress from "../utils/getIPAddress";
@@ -40,31 +40,6 @@ export async function insertVideoProcessRequest({
   });
 }
 
-export async function getLatestVideoProcessRequest(installationId: string) {
-  const client = await getOrCreateTable(VIDEO_PROCESS_REQUESTS_TABLE);
-
-  const iterator = client.listEntities({
-    queryOptions: {
-      filter: `PartitionKey eq '${installationId}'`,
-    },
-  });
-
-  let latestEntity = null;
-
-  for await (const entity of iterator) {
-    const currentTs = new Date(entity.timestamp as string);
-    const latestTs = latestEntity
-      ? new Date(latestEntity.timestamp as string)
-      : null;
-
-    if (!latestEntity || currentTs > latestTs) {
-      latestEntity = entity;
-    }
-  }
-
-  return latestEntity;
-}
-
 export async function getLatestProcessedVideo(mediaUrl: string) {
   const client = await getOrCreateTable(PROCESSES_VIDEO_TABLE);
   const partitionKey = hash(mediaUrl);
@@ -90,11 +65,13 @@ async function fun({
   request,
   context,
 }: HttpRequestParams<RequestEnqueueVideoDownload>) {
-  const latestRequest = await getLatestVideoProcessRequest(body.installationId);
-  if (latestRequest) {
+  const videoProcessRequests = await getVideoProcessRequests(
+    body.installationId
+  );
+  if (videoProcessRequests.length > 0) {
     const secondsAgo = differenceInSeconds(
       new Date(),
-      new Date(latestRequest.timestamp as string)
+      new Date(videoProcessRequests[0].timestamp as string)
     );
     if (secondsAgo <= 3) {
       throw new TooManyRequestsError();

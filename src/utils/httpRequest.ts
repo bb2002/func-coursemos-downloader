@@ -7,7 +7,7 @@ import { ClassConstructor, plainToInstance } from "class-transformer";
 import { validateOrReject } from "class-validator";
 import { HttpException } from "./httpException";
 
-type HttpRequestFunction = (
+export type HttpRequestFunction = (
   request: HttpRequest,
   context: InvocationContext
 ) => Promise<HttpResponseInit>;
@@ -18,15 +18,17 @@ export type HttpRequestParams<T> = {
   body: T;
 };
 
+export type SupplyerFunction = (request: HttpRequest) => Promise<any> | any;
+
 export function httpRequest<T extends object>(
   inDto: ClassConstructor<T>,
-  fun: (params: HttpRequestParams<T>) => Promise<object | HttpResponseInit>
+  fun: (params: HttpRequestParams<T>) => Promise<object | HttpResponseInit>,
+  supplyer: SupplyerFunction = (request: HttpRequest) => request.json()
 ): HttpRequestFunction {
   return async (request: HttpRequest, context: InvocationContext) => {
     let body: T;
     try {
-      const raw = await request.json();
-      body = plainToInstance(inDto, raw);
+      body = plainToInstance(inDto, await supplyer(request));
       await validateOrReject(body);
     } catch (ex) {
       if (Array.isArray(ex)) {
