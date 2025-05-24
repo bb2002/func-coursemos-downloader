@@ -102,6 +102,7 @@ async function fun({
 
   return {
     blobId,
+    requestId: context.invocationId,
   };
 }
 
