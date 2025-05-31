@@ -111,23 +111,24 @@ async function executeTS(
         validateStatus: () => true,
       });
 
-      if (res.status === 404) {
-        break;
-      }
-
       if (res.status >= 200 && res.status < 300) {
+        // 블록 다운로드 성공, 다음 세그먼트 읽기기
         const buffer = Buffer.from(res.data);
         await writeFile(segmentFilePath, buffer);
         downloadedSegments.push(segmentId);
         continue;
+      } else if (res.status >= 400 && res.status < 500) {
+        // 모든 블록을 다운로드 함
+        break;
+      } else if (res.status >= 500 && res.status < 600) {
+        // 다운로드 오류
+        await updateVideoProcessResult({
+          partitionKey,
+          rowKey,
+          status: "DOWNLOAD_FAILED_WITH_" + res.status,
+        });
+        return null;
       }
-
-      await updateVideoProcessResult({
-        partitionKey,
-        rowKey,
-        status: "DOWNLOAD_FAILED_WITH_" + res.status,
-      });
-      return null;
     } catch (ex) {
       await updateVideoProcessResult({
         partitionKey,
@@ -211,20 +212,27 @@ export async function videoProcessor(
   context: InvocationContext
 ): Promise<void> {
   const mediaUrlObj = new URL(mediaUrl);
-
+  let tempDir: string | null = null;
   let outputPath: string | null = null;
+
   switch (path.extname(mediaUrlObj.pathname).toLowerCase()) {
     case ".ts":
       outputPath = await executeTS(
         { partitionKey, rowKey, mediaUrl, blobId },
         context
       );
+      if (outputPath) {
+        tempDir = path.dirname(outputPath);
+      }
       break;
     case ".mp4":
       outputPath = await executeMP4(
         { partitionKey, rowKey, mediaUrl, blobId },
         context
       );
+      if (outputPath) {
+        tempDir = path.dirname(outputPath);
+      }
       break;
     default:
       await updateVideoProcessResult({
@@ -234,22 +242,37 @@ export async function videoProcessor(
       });
   }
 
-  const fileBuffer = await fs.promises.readFile(outputPath);
-  const containerClient = await getOrCreateBlob(CONTAINER_NAME);
-  const uploadedBlobName = await uploadMP4Blob(containerClient, fileBuffer);
-  const sasUrl = await generateSASUrl(CONTAINER_NAME, uploadedBlobName);
-  await Promise.all([
-    updateVideoProcessResult({
-      partitionKey,
-      rowKey,
-      status: "COMPLETED",
-    }),
-    insertProcessedVideo({
-      partitionKey: hash(mediaUrl),
-      rowKey: blobId,
-      sasUrl,
-    }),
-  ]);
+  if (outputPath === null || tempDir === null) {
+    return;
+  }
+
+  try {
+    const fileBuffer = await fs.promises.readFile(outputPath);
+    const containerClient = await getOrCreateBlob(CONTAINER_NAME);
+    const uploadedBlobName = await uploadMP4Blob(containerClient, fileBuffer);
+    const sasUrl = await generateSASUrl(CONTAINER_NAME, uploadedBlobName);
+
+    await Promise.all([
+      updateVideoProcessResult({
+        partitionKey,
+        rowKey,
+        status: "COMPLETED",
+      }),
+      insertProcessedVideo({
+        partitionKey: hash(mediaUrl),
+        rowKey: blobId,
+        sasUrl,
+      }),
+    ]);
+  } finally {
+    if (tempDir && fs.existsSync(tempDir)) {
+      try {
+        await fs.promises.rm(tempDir, { recursive: true, force: true });
+      } catch (ex) {
+        context.error(ex);
+      }
+    }
+  }
 }
 
 app.storageQueue("videoProcessor", {
